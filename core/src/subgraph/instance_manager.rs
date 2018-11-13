@@ -73,7 +73,7 @@ impl SubgraphInstanceManager {
                         "subgraph_name" => &name,
                         "subgraph_id" => &manifest.id
                     );
-
+                    panic!("PANIC AT THE DISCO ");
                     Self::handle_subgraph_added(
                         logger.clone(),
                         instances.clone(),

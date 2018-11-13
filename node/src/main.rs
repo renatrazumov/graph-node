@@ -30,6 +30,9 @@ use std::net::ToSocketAddrs;
 use std::time::Duration;
 use url::Url;
 
+use futures::sync::oneshot;
+use std::sync::{Arc, Mutex};
+
 use graph::components::forward;
 use graph::prelude::{JsonRpcServer as JsonRpcServerTrait, *};
 use graph::tokio_executor;
@@ -46,22 +49,58 @@ use graph_server_websocket::{SubscriptionServer as GraphQLSubscriptionServer, GR
 use graph_store_postgres::{Store as DieselStore, StoreConfig};
 
 fn main() {
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel();
     // Register guarded panic logger which ensures logs flush on shutdown
     let (panic_logger, _panic_guard) = guarded_logger();
-    register_panic_hook(panic_logger);
+    register_panic_hook(panic_logger, Mutex::new(Some(shutdown_sender)));
 
     // Create components for tokio context: multi-threaded runtime,
     // reactor reference, executor context on the runtime, and Timer handle.
-    let runtime = tokio::runtime::Runtime::new().expect("Failed to create runtime");
+    let mut runtime = tokio::runtime::Runtime::new().expect("Failed to create runtime");
     let reactor = tokio_reactor::Handle::current();
+    let mut executor = runtime.executor();
     let mut enter = tokio_executor::enter()
         .expect("Failed to enter runtime executor, multiple executors at once");
     let timer = Timer::default();
     let timer_handle = timer.handle();
 
-    // Setup runtime context with defaults
+    use std::time::{Duration, Instant};
+    use std::thread::sleep;
+
+//    std::thread::spawn(|| {
+//        shutdown_receiver.wait().map(|_| {
+//            runtime.shutdown_now().wait().unwrap();
+//            println!("shutdown done?");
+//            std::process::exit(1);
+//        }).expect("Shutdown process did not finish")
+//
+//    });
+
+    std::thread::spawn(|| {
+        shutdown_receiver.wait().map(|_| {
+            let now = Instant::now();
+            println!("Shutting down runtime!");
+            runtime.shutdown_now().timeout(Duration::from_secs(30)).map_err(move |e| {
+                println!("timeout error: {:?}", e);
+                println!("elapsed?: {:?}", e.is_elapsed());
+                println!("inner?: {:?}", e.is_inner());
+                println!("timer?: {:?}", e.is_timer());
+                println!("time now: {:?}", now.elapsed());
+//                std::process::exit(1);
+                ()
+            }).wait().map_err(|e| {
+                println!("second map ERROR: {:?}", e);
+                println!("time now {:?}", now.elapsed());
+                println!("hi");
+            });
+            std::process::exit(1);
+        }).expect("Shutdown process did not finish");
+    });
+
+
+    // Setup runtime context with defaults and run the main application
     tokio_reactor::with_default(&reactor, &mut enter, |enter| {
-        tokio_executor::with_default(&mut runtime.executor(), enter, |enter| {
+        tokio_executor::with_default(&mut executor, enter, |enter| {
             tokio_timer::with_default(&timer_handle, enter, |enter| {
                 enter
                     .block_on(future::lazy(|| async_main()))
@@ -69,8 +108,6 @@ fn main() {
             })
         })
     });
-
-    runtime.shutdown_on_idle().wait().unwrap();
 }
 
 fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
@@ -87,63 +124,63 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
                 .value_name("[NAME:]IPFS_HASH")
                 .help("name and IPFS hash of the subgraph manifest"),
         ).arg(
-            Arg::with_name("postgres-url")
-                .takes_value(true)
-                .required(true)
-                .long("postgres-url")
-                .value_name("URL")
-                .help("Location of the Postgres database used for storing entities"),
-        ).arg(
-            Arg::with_name("ethereum-rpc")
-                .takes_value(true)
-                .required_unless_one(&["ethereum-ws", "ethereum-ipc"])
-                .conflicts_with_all(&["ethereum-ws", "ethereum-ipc"])
-                .long("ethereum-rpc")
-                .value_name("NETWORK_NAME:URL")
-                .help(
-                    "Ethereum network name (e.g. 'mainnet') and \
+        Arg::with_name("postgres-url")
+            .takes_value(true)
+            .required(true)
+            .long("postgres-url")
+            .value_name("URL")
+            .help("Location of the Postgres database used for storing entities"),
+    ).arg(
+        Arg::with_name("ethereum-rpc")
+            .takes_value(true)
+            .required_unless_one(&["ethereum-ws", "ethereum-ipc"])
+            .conflicts_with_all(&["ethereum-ws", "ethereum-ipc"])
+            .long("ethereum-rpc")
+            .value_name("NETWORK_NAME:URL")
+            .help(
+                "Ethereum network name (e.g. 'mainnet') and \
                      Ethereum RPC URL, separated by a ':'",
-                ),
-        ).arg(
-            Arg::with_name("ethereum-ws")
-                .takes_value(true)
-                .required_unless_one(&["ethereum-rpc", "ethereum-ipc"])
-                .conflicts_with_all(&["ethereum-rpc", "ethereum-ipc"])
-                .long("ethereum-ws")
-                .value_name("NETWORK_NAME:URL")
-                .help(
-                    "Ethereum network name (e.g. 'mainnet') and \
+            ),
+    ).arg(
+        Arg::with_name("ethereum-ws")
+            .takes_value(true)
+            .required_unless_one(&["ethereum-rpc", "ethereum-ipc"])
+            .conflicts_with_all(&["ethereum-rpc", "ethereum-ipc"])
+            .long("ethereum-ws")
+            .value_name("NETWORK_NAME:URL")
+            .help(
+                "Ethereum network name (e.g. 'mainnet') and \
                      Ethereum WebSocket URL, separated by a ':'",
-                ),
-        ).arg(
-            Arg::with_name("ethereum-ipc")
-                .takes_value(true)
-                .required_unless_one(&["ethereum-rpc", "ethereum-ws"])
-                .conflicts_with_all(&["ethereum-rpc", "ethereum-ws"])
-                .long("ethereum-ipc")
-                .value_name("NETWORK_NAME:FILE")
-                .help(
-                    "Ethereum network name (e.g. 'mainnet') and \
+            ),
+    ).arg(
+        Arg::with_name("ethereum-ipc")
+            .takes_value(true)
+            .required_unless_one(&["ethereum-rpc", "ethereum-ws"])
+            .conflicts_with_all(&["ethereum-rpc", "ethereum-ws"])
+            .long("ethereum-ipc")
+            .value_name("NETWORK_NAME:FILE")
+            .help(
+                "Ethereum network name (e.g. 'mainnet') and \
                      Ethereum IPC pipe, separated by a ':'",
-                ),
-        ).arg(
-            Arg::with_name("ipfs")
-                .takes_value(true)
-                .required(true)
-                .long("ipfs")
-                .value_name("HOST:PORT")
-                .help("HTTP address of an IPFS node"),
-        ).arg(
-            Arg::with_name("admin-port")
-                .default_value("8020")
-                .long("admin-port")
-                .value_name("PORT")
-                .help("port for the admin JSON-RPC server"),
-        ).arg(
-            Arg::with_name("debug")
-                .long("debug")
-                .help("Enable debug logging"),
-        ).get_matches();
+            ),
+    ).arg(
+        Arg::with_name("ipfs")
+            .takes_value(true)
+            .required(true)
+            .long("ipfs")
+            .value_name("HOST:PORT")
+            .help("HTTP address of an IPFS node"),
+    ).arg(
+        Arg::with_name("admin-port")
+            .default_value("8020")
+            .long("admin-port")
+            .value_name("PORT")
+            .help("port for the admin JSON-RPC server"),
+    ).arg(
+        Arg::with_name("debug")
+            .long("debug")
+            .help("Enable debug logging"),
+    ).get_matches();
 
     // Set up logger
     let logger = logger(matches.is_present("debug"));
@@ -202,18 +239,18 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
                 })),
             }
         }).into_inner()
-    {
-        Ok((client, address)) => (client, address),
-        Err(errors) => {
-            for (address, e) in errors.iter() {
-                error!(
+        {
+            Ok((client, address)) => (client, address),
+            Err(errors) => {
+                for (address, e) in errors.iter() {
+                    error!(
                     logger, "Failed to create IPFS client for address: {}", address;
                     "error" => format!("{}", e),
                 )
+                }
+                panic!("Could not connect to IPFS");
             }
-            panic!("Could not connect to IPFS");
-        }
-    };
+        };
     // Test the IPFS client by getting the version from the IPFS daemon
     let ipfs_test = ipfs_client.version();
     let ipfs_ok_logger = logger.clone();
@@ -227,11 +264,11 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
                 );
                 panic!("Failed to connect to IPFS: {}", e);
             }).map(move |_| {
-                info!(
-                    ipfs_ok_logger,
-                    "Successfully connected to IPFS node at: {}", ipfs_address
-                );
-            }),
+            info!(
+                ipfs_ok_logger,
+                "Successfully connected to IPFS node at: {}", ipfs_address
+            );
+        }),
     );
 
     let mut subgraph_provider = IpfsSubgraphProvider::new(logger.clone(), ipfs_client.clone());
@@ -391,6 +428,8 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
             .serve(GRAPHQL_WS_PORT)
             .expect("Failed to start GraphQL subscription server"),
     );
+    tokio::spawn(future::empty());
+//    panic!("JFDSOJFIDS");
     future::empty()
 }
 
