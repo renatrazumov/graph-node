@@ -155,6 +155,8 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
     // Safe to unwrap because a value is required by CLI
     let postgres_url = matches.value_of("postgres-url").unwrap().to_string();
 
+    let node_id = NodeId::new("default".to_owned()).expect("invalid node ID");
+
     // Obtain subgraph related command-line arguments
     let subgraph = matches.value_of("subgraph");
 
@@ -298,15 +300,19 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
     info!(logger, "Connecting to Postgres"; "url" => &postgres_url);
     let store = Arc::new(DieselStore::new(
         StoreConfig {
-            url: postgres_url,
+            postgres_url,
             network_name: ethereum_network_name.to_owned(),
         },
         &logger,
         eth_net_identifiers,
     ));
     let graphql_runner = Arc::new(graph_core::GraphQlRunner::new(&logger, store.clone()));
-    let mut graphql_server =
-        GraphQLQueryServer::new(&logger, graphql_runner.clone(), store.clone());
+    let mut graphql_server = GraphQLQueryServer::new(
+        &logger,
+        graphql_runner.clone(),
+        store.clone(),
+        node_id.clone(),
+    );
     let mut subscription_server =
         GraphQLSubscriptionServer::new(&logger, graphql_runner.clone(), store.clone());
 
@@ -372,17 +378,15 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
             logger.clone(),
             Arc::new(subgraph_provider),
             store.clone(),
+            node_id.clone(),
         ).wait()
         .expect("failed to initialize subgraph provider"),
     );
 
     // Start admin JSON-RPC server.
-    let json_rpc_server = JsonRpcServer::serve(
-        json_rpc_port,
-        named_subgraph_provider,
-        store.clone(),
-        logger.clone(),
-    ).expect("Failed to start admin server");
+    let json_rpc_server =
+        JsonRpcServer::serve(json_rpc_port, named_subgraph_provider, logger.clone())
+            .expect("Failed to start admin server");
 
     // Let the server run forever.
     std::mem::forget(json_rpc_server);

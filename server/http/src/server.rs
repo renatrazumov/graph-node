@@ -51,11 +51,17 @@ pub struct GraphQLServer<Q, S> {
     schemas: Arc<RwLock<BTreeMap<SubgraphId, Schema>>>,
     graphql_runner: Arc<Q>,
     store: Arc<S>,
+    node_id: NodeId,
 }
 
 impl<Q, S> GraphQLServer<Q, S> {
     /// Creates a new GraphQL server.
-    pub fn new(logger: &slog::Logger, graphql_runner: Arc<Q>, store: Arc<S>) -> Self {
+    pub fn new(
+        logger: &slog::Logger,
+        graphql_runner: Arc<Q>,
+        store: Arc<S>,
+        node_id: NodeId,
+    ) -> Self {
         // Create channel for handling incoming schema events
         let (schema_event_sink, schema_event_stream) = channel(100);
 
@@ -66,6 +72,7 @@ impl<Q, S> GraphQLServer<Q, S> {
             schemas: Arc::new(RwLock::new(BTreeMap::new())),
             graphql_runner,
             store,
+            node_id,
         };
 
         // Spawn tasks to handle incoming schema events
@@ -115,7 +122,7 @@ impl<Q, S> GraphQLServer<Q, S> {
 impl<Q, S> GraphQLServerTrait for GraphQLServer<Q, S>
 where
     Q: GraphQlRunner + Sized + 'static,
-    S: Store,
+    S: SubgraphDeploymentStore,
 {
     type ServeError = GraphQLServeError;
 
@@ -136,9 +143,14 @@ where
         let graphql_runner = self.graphql_runner.clone();
         let schemas = self.schemas.clone();
         let store = self.store.clone();
+        let node_id = self.node_id.clone();
         let new_service = move || {
-            let service =
-                GraphQLService::new(schemas.clone(), graphql_runner.clone(), store.clone());
+            let service = GraphQLService::new(
+                schemas.clone(),
+                graphql_runner.clone(),
+                store.clone(),
+                node_id.clone(),
+            );
             future::ok::<GraphQLService<Q, S>, hyper::Error>(service)
         };
 
@@ -172,7 +184,8 @@ mod tests {
                     let logger = Logger::root(slog::Discard, o!());
                     let graphql_runner = Arc::new(MockGraphQlRunner::new(&logger));
                     let store = Arc::new(MockStore::new());
-                    let mut server = GraphQLServer::new(&logger, graphql_runner, store);
+                    let node_id = NodeId::new("test").unwrap();
+                    let mut server = GraphQLServer::new(&logger, graphql_runner, store, node_id);
                     let schema_sink = server.schema_event_sink();
 
                     // Create an input schema event

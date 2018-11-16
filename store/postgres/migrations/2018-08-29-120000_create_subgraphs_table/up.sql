@@ -9,9 +9,9 @@ CREATE TABLE IF NOT EXISTS subgraphs (
     latest_block_number BIGINT NOT NULL
 );
 
--- Maps subgraph names to immutable subgraph versions (IDs).
-CREATE TABLE IF NOT EXISTS subgraph_names (
-    subgraph_name VARCHAR PRIMARY KEY,
-    subgraph_id VARCHAR,
-    access_token VARCHAR
+-- Maps names to immutable subgraph versions (IDs) and node IDs.
+CREATE TABLE IF NOT EXISTS subgraph_deployments (
+    deployment_name VARCHAR PRIMARY KEY,
+    subgraph_id VARCHAR UNIQUE NOT NULL,
+    node_id VARCHAR NOT NULL
 );

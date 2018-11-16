@@ -91,14 +91,17 @@ where
         .block_on(future::lazy(move || {
             // Set up Store
             let logger = Logger::root(slog::Discard, o!());
-            let url = postgres_test_url();
+            let postgres_url = postgres_test_url();
             let net_identifiers = EthereumNetworkIdentifier {
                 net_version: "graph test suite".to_owned(),
                 genesis_block_hash: TEST_BLOCK_0_PTR.hash,
             };
             let network_name = "fake_network".to_owned();
             let store = Arc::new(DieselStore::new(
-                StoreConfig { url, network_name },
+                StoreConfig {
+                    postgres_url,
+                    network_name,
+                },
                 &logger,
                 net_identifiers,
             ));

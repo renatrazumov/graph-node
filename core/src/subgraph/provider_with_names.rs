@@ -9,6 +9,7 @@ pub struct SubgraphProviderWithNames<P, S> {
     logger: slog::Logger,
     provider: Arc<P>,
     store: Arc<S>,
+    node_id: NodeId,
 }
 
 impl<P, S> Clone for SubgraphProviderWithNames<P, S> {
@@ -17,6 +18,7 @@ impl<P, S> Clone for SubgraphProviderWithNames<P, S> {
             logger: self.logger.clone(),
             provider: self.provider.clone(),
             store: self.store.clone(),
+            node_id: self.node_id.clone(),
         }
     }
 }
@@ -24,34 +26,89 @@ impl<P, S> Clone for SubgraphProviderWithNames<P, S> {
 impl<P, S> SubgraphProviderWithNames<P, S>
 where
     P: SubgraphProviderTrait,
-    S: Store,
+    S: SubgraphDeploymentStore,
 {
     pub fn init(
         logger: slog::Logger,
         provider: Arc<P>,
         store: Arc<S>,
+        node_id: NodeId,
     ) -> impl Future<Item = Self, Error = Error> {
+        let logger = logger.new(o!("component" => "SubgraphProviderWithNames"));
+        let logger_clone = logger.clone();
+
         // Create the named subgraph provider
         let provider = SubgraphProviderWithNames {
-            logger: logger.new(o!("component" => "SubgraphProviderWithNames")),
+            logger,
             provider,
             store,
+            node_id,
         };
 
+        // Start event stream before starting deployed subgraphs
+        let deployment_event_stream = provider.store.deployment_events(provider.node_id.clone());
+
+        let provider_clone = provider.clone();
+        tokio::spawn(future::lazy(move || {
+            deployment_event_stream
+                .from_err()
+                .for_each(
+                    move |deployment_event| -> Box<Future<Item = (), Error = _> + Send> {
+                        match deployment_event {
+                            DeploymentEvent::Add {
+                                deployment_name: _,
+                                subgraph_id,
+                                node_id: event_node_id,
+                            } => {
+                                assert_eq!(event_node_id, provider_clone.node_id);
+
+                                // TODO handle error, retry? or just log?
+                                Box::new(provider_clone.provider.start(subgraph_id).then(
+                                    |result| match result {
+                                        Ok(()) => Ok(()),
+                                        Err(SubgraphProviderError::AlreadyRunning(_)) => Ok(()),
+                                        Err(e) => Err(e),
+                                    },
+                                ))
+                            }
+                            DeploymentEvent::Remove {
+                                deployment_name: _,
+                                subgraph_id,
+                                node_id: event_node_id,
+                            } => {
+                                assert_eq!(event_node_id, provider_clone.node_id);
+
+                                // TODO handle error, retry? or just log?
+                                Box::new(provider_clone.provider.stop(subgraph_id).then(|result| {
+                                    match result {
+                                        Ok(()) => Ok(()),
+                                        Err(SubgraphProviderError::NotRunning(_)) => Ok(()),
+                                        Err(e) => Err(e),
+                                    }
+                                }))
+                            }
+                        }
+                    },
+                ).map_err(move |e| {
+                    error!(logger_clone, "deployment event stream failed: {}", e);
+                    panic!("deployment event stream error");
+                })
+        }));
+
         // Deploy named subgraph found in store
-        provider.deploy_saved_subgraphs().map(move |()| provider)
+        provider.start_deployed_subgraphs().map(|()| provider)
     }
 
-    fn deploy_saved_subgraphs(&self) -> impl Future<Item = (), Error = Error> {
+    fn start_deployed_subgraphs(&self) -> impl Future<Item = (), Error = Error> {
         let self_clone = self.clone();
 
-        future::result(self.store.read_all_subgraph_names()).and_then(
-            move |subgraph_names_and_ids| {
+        future::result(self.store.read_by_node_id(self.node_id.clone())).and_then(
+            move |names_and_subgraph_ids| {
                 let self_clone = self_clone.clone();
 
-                let subgraph_ids = subgraph_names_and_ids
+                let subgraph_ids = names_and_subgraph_ids
                     .into_iter()
-                    .filter_map(|(_name, id_opt)| id_opt)
+                    .map(|(_name, id)| id)
                     .collect::<HashSet<SubgraphId>>();
 
                 stream::iter_ok(subgraph_ids)
@@ -64,148 +121,39 @@ where
 impl<P, S> SubgraphProviderWithNamesTrait for SubgraphProviderWithNames<P, S>
 where
     P: SubgraphProviderTrait,
-    S: Store,
+    S: SubgraphDeploymentStore,
 {
     fn deploy(
         &self,
-        name: String,
+        name: SubgraphDeploymentName,
         id: SubgraphId,
     ) -> Box<Future<Item = (), Error = SubgraphProviderError> + Send + 'static> {
-        let self_clone = self.clone();
-
-        // Check that the name contains only allowed characters.
-        if !name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        {
-            return Box::new(future::err(SubgraphProviderError::InvalidName(name)));
-        }
-
         Box::new(
-            // Cleanly undeploy this name if it exists (removes old mapping)
-            self.remove(name.clone())
-                .then(|result| {
-                    match result {
-                        // Name not found is fine. No old mapping to remove.
-                        Err(SubgraphProviderError::NameNotFound(_)) => Ok(()),
-                        other => other,
-                    }
-                }).and_then(move |()| {
-                    future::result(self_clone.store.find_subgraph_names_by_id(id.clone()))
-                        .from_err()
-                        .and_then(move |existing_names| {
-                            // Add new mapping
-                            future::result(
-                                self_clone
-                                    .store
-                                    .write_subgraph_name(name.clone(), Some(id.clone())),
-                            ).from_err()
-                            .and_then(
-                                move |()| -> Box<Future<Item = _, Error = _> + Send> {
-                                    if existing_names.is_empty() {
-                                        // Start subgraph processing
-                                        Box::new(self_clone.provider.start(id))
-                                    } else {
-                                        // Subgraph is already started
-                                        Box::new(future::ok(()))
-                                    }
-                                },
-                            )
-                        })
-                }),
+            future::result(
+                self.store
+                    .write(name.clone(), id.clone(), self.node_id.clone()),
+            ).from_err(),
         )
     }
 
     fn remove(
         &self,
-        name: String,
+        name: SubgraphDeploymentName,
     ) -> Box<Future<Item = (), Error = SubgraphProviderError> + Send + 'static> {
-        let self_clone = self.clone();
-        let store = self.store.clone();
-        let name_clone = name.clone();
-
-        // Look up name mapping
         Box::new(
-            future::result(store.read_subgraph_name(name.clone()))
+            future::result(self.store.remove(name.clone()))
                 .from_err()
-                .and_then(move |id_opt_opt: Option<Option<SubgraphId>>| {
-                    id_opt_opt
-                        .ok_or_else(|| SubgraphProviderError::NameNotFound(name_clone.clone()))
-                }).and_then(move |id_opt: Option<SubgraphId>| {
-                    let store = store.clone();
-
-                    // Delete this name->ID mapping
-                    future::result(store.delete_subgraph_name(name.clone()))
-                        .from_err()
-                        .and_then(move |()| -> Box<Future<Item = _, Error = _> + Send> {
-                            let store = store.clone();
-
-                            // If name mapping pointed to a non-null ID
-                            if let Some(id) = id_opt {
-                                Box::new(
-                                    future::result(store.find_subgraph_names_by_id(id.clone()))
-                                        .from_err()
-                                        .and_then(move |names| -> Box<Future<Item=_, Error=_> + Send> {
-                                            // If this subgraph ID is no longer pointed to by any
-                                            // subgraph names
-                                            if names.is_empty() {
-                                                // Shut down subgraph processing
-                                                // Note: there's a possible race condition if two
-                                                // names pointing to the same ID are removed at the
-                                                // same time.
-                                                // That's fine for now and will be fixed when this
-                                                // is redone for the hosted service.
-                                                Box::new(self_clone.provider.stop(id))
-                                            } else {
-                                                // Leave subgraph running
-                                                Box::new(future::ok(()))
-                                            }
-                                        })
-                                )
-                            } else {
-                                // Nothing to shut down
-                                Box::new(future::ok(()))
-                            }
-                        })
+                .and_then(move |did_remove| {
+                    if did_remove {
+                        Ok(())
+                    } else {
+                        Err(SubgraphProviderError::NameNotFound(name.to_string()))
+                    }
                 }),
         )
     }
 
-    fn list(&self) -> Result<Vec<(String, Option<SubgraphId>)>, Error> {
-        self.store.read_all_subgraph_names()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::SubgraphProvider;
-    use super::*;
-    use graph_mock::MockStore;
-
-    #[test]
-    fn rejects_name_bad_for_urls() {
-        extern crate failure;
-
-        struct FakeLinkResolver;
-
-        impl LinkResolver for FakeLinkResolver {
-            fn cat(&self, _: &Link) -> Box<Future<Item = Vec<u8>, Error = failure::Error> + Send> {
-                unimplemented!()
-            }
-        }
-        let logger = slog::Logger::root(slog::Discard, o!());
-        let store = Arc::new(MockStore::new());
-        let provider = SubgraphProvider::new(logger.clone(), Arc::new(FakeLinkResolver));
-        let name_provider = Arc::new(
-            SubgraphProviderWithNames::init(logger, Arc::new(provider), store)
-                .wait()
-                .unwrap(),
-        );
-        let bad = "/../funky%2F:9001".to_owned();
-        let result = name_provider.deploy(bad.clone(), "".to_owned());
-        match result.wait() {
-            Err(SubgraphProviderError::InvalidName(name)) => assert_eq!(name, bad),
-            x => panic!("unexpected test result {:?}", x),
-        }
+    fn list(&self) -> Result<Vec<(SubgraphDeploymentName, SubgraphId)>, Error> {
+        self.store.read_by_node_id(self.node_id.clone())
     }
 }

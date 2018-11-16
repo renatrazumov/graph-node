@@ -39,7 +39,7 @@ pub struct SubscriptionServer<Q, S> {
 impl<Q, S> SubscriptionServer<Q, S>
 where
     Q: GraphQlRunner + 'static,
-    S: Store,
+    S: SubgraphDeploymentStore,
 {
     pub fn new(logger: &Logger, graphql_runner: Arc<Q>, store: Arc<S>) -> Self {
         let logger = logger.new(o!("component" => "SubscriptionServer"));
@@ -100,7 +100,7 @@ where
         }));
     }
 
-    fn subgraph_id_from_url_path(store: Arc<S>, path: &Path) -> Result<String, ()> {
+    fn subgraph_id_from_url_path(store: Arc<S>, path: &Path) -> Result<SubgraphId, ()> {
         let mut parts = path.iter();
         if parts.next() != Some("/".as_ref()) {
             return Err(());
@@ -117,11 +117,13 @@ where
                     .and_then(|name| name.to_owned().into_string().ok())
                     .ok_or(())?;
 
-                store
-                    .read_subgraph_name(name)
-                    .expect("error reading subgraph name from store")
-                    .ok_or(())
-                    .and_then(|id_opt| id_opt.ok_or(()))
+                SubgraphDeploymentName::new(name)
+                    .map(|name| {
+                        store
+                            .read(name)
+                            .expect("error reading subgraph name from store")
+                    }).and_then(|deployment_opt| deployment_opt.ok_or(()))
+                    .map(|(subgraph_id, _node_id)| subgraph_id)
             }
             _ => Err(()),
         }
@@ -131,7 +133,7 @@ where
 impl<Q, S> SubscriptionServerTrait for SubscriptionServer<Q, S>
 where
     Q: GraphQlRunner + 'static,
-    S: Store,
+    S: SubgraphDeploymentStore,
 {
     type ServeError = ();
 
@@ -225,7 +227,7 @@ where
 impl<Q, S> EventConsumer<SchemaEvent> for SubscriptionServer<Q, S>
 where
     Q: GraphQlRunner + 'static,
-    S: Store,
+    S: SubgraphDeploymentStore,
 {
     fn event_sink(&self) -> Box<Sink<SinkItem = SchemaEvent, SinkError = ()> + Send> {
         let logger = self.logger.clone();

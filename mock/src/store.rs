@@ -68,48 +68,6 @@ impl Store for MockStore {
         Ok(self.entities.clone())
     }
 
-    fn authorize_subgraph_name(&self, _: String, _: String) -> Result<(), Error> {
-        unimplemented!();
-    }
-
-    fn check_subgraph_name_access_token(&self, _: String, _: String) -> Result<bool, Error> {
-        unimplemented!();
-    }
-
-    fn read_all_subgraph_names(&self) -> Result<Vec<(String, Option<SubgraphId>)>, Error> {
-        let subgraph_names = self.subgraph_names.lock().unwrap();
-        Ok(subgraph_names
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect())
-    }
-
-    fn read_subgraph_name(&self, name: String) -> Result<Option<Option<SubgraphId>>, Error> {
-        let subgraph_names = self.subgraph_names.lock().unwrap();
-        Ok(subgraph_names.get(&name).map(|opt| opt.to_owned()))
-    }
-
-    fn write_subgraph_name(&self, name: String, id_opt: Option<SubgraphId>) -> Result<(), Error> {
-        let mut subgraph_names = self.subgraph_names.lock().unwrap();
-        subgraph_names.insert(name, id_opt);
-        Ok(())
-    }
-
-    fn find_subgraph_names_by_id(&self, subgraph_id: SubgraphId) -> Result<Vec<String>, Error> {
-        let subgraph_names = self.subgraph_names.lock().unwrap();
-        Ok(subgraph_names
-            .iter()
-            .filter(|(_, id_opt)| id_opt.as_ref() == Some(&subgraph_id))
-            .map(|(name, _)| name.to_owned())
-            .collect())
-    }
-
-    fn delete_subgraph_name(&self, name: String) -> Result<(), Error> {
-        let mut subgraph_names = self.subgraph_names.lock().unwrap();
-        subgraph_names.remove(&name);
-        Ok(())
-    }
-
     fn add_subgraph_if_missing(&self, _: SubgraphId, _: EthereumBlockPointer) -> Result<(), Error> {
         unimplemented!();
     }
@@ -148,6 +106,34 @@ impl Store for MockStore {
 
     fn subscribe(&self, _: Vec<SubgraphEntityPair>) -> EntityChangeStream {
         unimplemented!();
+    }
+}
+
+impl SubgraphDeploymentStore for MockStore {
+    fn read_by_node_id(
+        &self,
+        _: NodeId,
+    ) -> Result<Vec<(SubgraphDeploymentName, SubgraphId)>, Error> {
+        unimplemented!()
+    }
+
+    fn write(&self, _: SubgraphDeploymentName, _: SubgraphId, _: NodeId) -> Result<(), Error> {
+        unimplemented!()
+    }
+
+    fn read(&self, _: SubgraphDeploymentName) -> Result<Option<(SubgraphId, NodeId)>, Error> {
+        unimplemented!()
+    }
+
+    fn remove(&self, _: SubgraphDeploymentName) -> Result<bool, Error> {
+        unimplemented!()
+    }
+
+    fn deployment_events(
+        &self,
+        _: NodeId,
+    ) -> Box<Stream<Item = DeploymentEvent, Error = Error> + Send> {
+        unimplemented!()
     }
 }
 
@@ -199,34 +185,6 @@ impl Store for FakeStore {
     }
 
     fn find(&self, _: EntityQuery) -> Result<Vec<Entity>, QueryExecutionError> {
-        unimplemented!();
-    }
-
-    fn authorize_subgraph_name(&self, _: String, _: String) -> Result<(), Error> {
-        unimplemented!();
-    }
-
-    fn check_subgraph_name_access_token(&self, _: String, _: String) -> Result<bool, Error> {
-        unimplemented!();
-    }
-
-    fn read_all_subgraph_names(&self) -> Result<Vec<(String, Option<SubgraphId>)>, Error> {
-        unimplemented!();
-    }
-
-    fn read_subgraph_name(&self, _: String) -> Result<Option<Option<SubgraphId>>, Error> {
-        unimplemented!();
-    }
-
-    fn write_subgraph_name(&self, _: String, _: Option<SubgraphId>) -> Result<(), Error> {
-        unimplemented!();
-    }
-
-    fn find_subgraph_names_by_id(&self, _: SubgraphId) -> Result<Vec<String>, Error> {
-        unimplemented!();
-    }
-
-    fn delete_subgraph_name(&self, _: String) -> Result<(), Error> {
         unimplemented!();
     }
 

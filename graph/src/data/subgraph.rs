@@ -26,18 +26,12 @@ where
     Address::from_str(address).map_err(D::Error::custom)
 }
 
-/// The ID of a subgraph.
 pub type SubgraphId = String;
 
 #[derive(Fail, Debug)]
 pub enum SubgraphProviderError {
     #[fail(display = "subgraph resolve error: {}", _0)]
     ResolveError(SubgraphManifestResolveError),
-    #[fail(
-        display = "name {} is invalid, only ASCII alphanumerics, `-` and `_` are allowed",
-        _0
-    )]
-    InvalidName(String),
     /// Occurs when attempting to remove a subgraph that's not hosted.
     #[fail(display = "subgraph name not found: {}", _0)]
     NameNotFound(String),

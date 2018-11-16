@@ -68,7 +68,7 @@ pub mod prelude {
     pub use components::store::{
         ChainStore, EntityChange, EntityChangeOperation, EntityChangeStream, EntityFilter,
         EntityKey, EntityOperation, EntityOrder, EntityQuery, EntityRange, Store,
-        SubgraphEntityPair,
+        SubgraphDeploymentStore,
     };
     pub use components::subgraph::{
         RuntimeHost, RuntimeHostBuilder, SchemaEvent, SubgraphInstance, SubgraphInstanceManager,
@@ -82,7 +82,10 @@ pub mod prelude {
     };
     pub use data::schema::Schema;
     pub use data::store::scalar::{BigInt, BigIntSign};
-    pub use data::store::{Attribute, Entity, Value, ValueType};
+    pub use data::store::{
+        Attribute, DeploymentEvent, Entity, NodeId, SubgraphDeploymentName, SubgraphEntityPair,
+        Value, ValueType,
+    };
     pub use data::subgraph::{
         DataSource, Link, MappingABI, MappingEventHandler, SubgraphId, SubgraphManifest,
         SubgraphManifestResolveError, SubgraphProviderError,

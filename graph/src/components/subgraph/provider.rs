@@ -37,14 +37,14 @@ pub trait SubgraphProvider:
 pub trait SubgraphProviderWithNames: Send + Sync + 'static {
     fn deploy(
         &self,
-        name: String,
+        name: SubgraphDeploymentName,
         id: SubgraphId,
     ) -> Box<Future<Item = (), Error = SubgraphProviderError> + Send + 'static>;
 
     fn remove(
         &self,
-        name: String,
+        name: SubgraphDeploymentName,
     ) -> Box<Future<Item = (), Error = SubgraphProviderError> + Send + 'static>;
 
-    fn list(&self) -> Result<Vec<(String, Option<SubgraphId>)>, Error>;
+    fn list(&self) -> Result<Vec<(SubgraphDeploymentName, SubgraphId)>, Error>;
 }
